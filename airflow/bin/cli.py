@@ -530,7 +530,7 @@ def task_state(args):
     """
     dag = get_dag(args)
     task = dag.get_task(task_id=args.task_id)
-    ti = TaskInstance(task, args.execution_date)
+    ti = TaskInstance(task, args.run_id, args.exec_date)
     print(ti.current_state())
 
 
@@ -542,7 +542,7 @@ def dag_state(args):
     running
     """
     dag = get_dag(args)
-    dr = DagRun.find(dag.dag_id, execution_date=args.execution_date)
+    dr = DagRun.find(dag.dag_id, run_id=args.run_id, execution_date=args.exec_date)
     print(dr[0].state if len(dr) > 0 else None)
 
 
@@ -1491,7 +1491,8 @@ class CLIFactory(object):
         }, {
             'func': dag_state,
             'help': "Get the status of a dag run",
-            'args': ('dag_id', 'execution_date', 'subdir'),
+            'args': ('dag_id', 'subdir'),
+            'mutually_exclusive_group' : ('run_id', 'exec_date'),
         }, {
             'func': task_failed_deps,
             'help': (
@@ -1503,7 +1504,8 @@ class CLIFactory(object):
         }, {
             'func': task_state,
             'help': "Get the status of a task instance",
-            'args': ('dag_id', 'task_id', 'execution_date', 'subdir'),
+            'args': ('dag_id', 'task_id', 'subdir'),
+            'mutually_exclusive_group' : ('run_id', 'exec_date'),
         }, {
             'func': serve_logs,
             'help': "Serve logs generate by worker",
@@ -1572,6 +1574,16 @@ class CLIFactory(object):
         for sub in subparser_list:
             sub = cls.subparsers_dict[sub]
             sp = subparsers.add_parser(sub['func'].__name__, help=sub['help'])
+
+            if 'mutually_exclusive_group' in sub:
+                group = sp.add_mutually_exclusive_group(required=True)
+                for arg in sub['mutually_exclusive_group']:
+                    arg = cls.args[arg]
+                    kwargs = {
+                        f: getattr(arg, f)
+                        for f in arg._fields if f != 'flags' and getattr(arg, f)}
+                    group.add_argument(*arg.flags, **kwargs)
+
             for arg in sub['args']:
                 if 'dag_id' in arg and dag_parser:
                     continue

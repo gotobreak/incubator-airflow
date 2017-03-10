@@ -723,6 +723,7 @@ class TaskInstance(Base):
 
     task_id = Column(String(ID_LEN), primary_key=True)
     dag_id = Column(String(ID_LEN), primary_key=True)
+    run_id = Column(String(ID_LEN), primary_key=True) 
     execution_date = Column(DateTime, primary_key=True)
     start_date = Column(DateTime)
     end_date = Column(DateTime)
@@ -743,12 +744,15 @@ class TaskInstance(Base):
         Index('ti_dag_state', dag_id, state),
         Index('ti_state', state),
         Index('ti_state_lkp', dag_id, task_id, execution_date, state),
+        Index('ti_state_run_id', dag_id, task_id, run_id, state),
+        Index('ti_state_main', dag_id, task_id, run_id, execution_date, state),
         Index('ti_pool', pool, state, priority_weight),
     )
 
     def __init__(self, task, execution_date, state=None):
         self.dag_id = task.dag_id
         self.task_id = task.task_id
+        self.run_id = run_id
         self.execution_date = execution_date
         self.task = task
         self.queue = task.queue
@@ -829,6 +833,7 @@ class TaskInstance(Base):
         return TaskInstance.generate_command(
             self.dag_id,
             self.task_id,
+            self.run_id,
             self.execution_date,
             mark_success=mark_success,
             ignore_all_deps=ignore_all_deps,
@@ -846,6 +851,7 @@ class TaskInstance(Base):
     @staticmethod
     def generate_command(dag_id,
                          task_id,
+                         run_id,
                          execution_date,
                          mark_success=False,
                          ignore_all_deps=False,
@@ -867,6 +873,8 @@ class TaskInstance(Base):
         :type dag_id: unicode
         :param task_id: Task ID
         :type task_id: unicode
+        :param run_id: Defines the the run id for this task instance
+        :type run_id: string
         :param execution_date: Execution date for the task
         :type execution_date: datetime
         :param mark_success: Whether to mark the task as successful
@@ -895,7 +903,7 @@ class TaskInstance(Base):
         :return: shell command that can be used to run the task instance
         """
         iso = execution_date.isoformat()
-        cmd = ["airflow", "run", str(dag_id), str(task_id), str(iso)]
+        cmd = ["airflow", "run", str(dag_id), str(task_id), str(run_id), str(iso)]
         cmd.extend(["--mark_success"]) if mark_success else None
         cmd.extend(["--pickle", str(pickle_id)]) if pickle_id else None
         cmd.extend(["--job_id", str(job_id)]) if job_id else None
@@ -915,7 +923,7 @@ class TaskInstance(Base):
         iso = self.execution_date.isoformat()
         log = os.path.expanduser(configuration.get('core', 'BASE_LOG_FOLDER'))
         return (
-            "{log}/{self.dag_id}/{self.task_id}/{iso}.log".format(**locals()))
+            "{log}/{self.dag_id}/{self.task_id}/{self.run_id}/{iso}.log".format(**locals()))
 
     @property
     def log_url(self):
@@ -925,6 +933,7 @@ class TaskInstance(Base):
             "/admin/airflow/log"
             "?dag_id={self.dag_id}"
             "&task_id={self.task_id}"
+            "&run_id={self.run_id}"
             "&execution_date={iso}"
         ).format(**locals())
 
@@ -937,6 +946,7 @@ class TaskInstance(Base):
             "?action=success"
             "&task_id={self.task_id}"
             "&dag_id={self.dag_id}"
+            "&run_id={self.run_id}"
             "&execution_date={iso}"
             "&upstream=false"
             "&downstream=false"
@@ -953,6 +963,7 @@ class TaskInstance(Base):
         ti = session.query(TI).filter(
             TI.dag_id == self.dag_id,
             TI.task_id == self.task_id,
+            TI.run_id == self.run_id,
             TI.execution_date == self.execution_date,
         ).all()
         if ti:
@@ -985,6 +996,7 @@ class TaskInstance(Base):
         qry = session.query(TI).filter(
             TI.dag_id == self.dag_id,
             TI.task_id == self.task_id,
+            TI.run_id == self.run_id,
             TI.execution_date == self.execution_date)
 
         if lock_for_update:
@@ -1008,6 +1020,7 @@ class TaskInstance(Base):
         session.query(XCom).filter(
             XCom.dag_id == self.dag_id,
             XCom.task_id == self.task_id,
+            XCom.run_id == self.run_id,
             XCom.execution_date == self.execution_date
         ).delete()
         session.commit()
@@ -1017,7 +1030,7 @@ class TaskInstance(Base):
         """
         Returns a tuple that identifies the task instance uniquely
         """
-        return self.dag_id, self.task_id, self.execution_date
+        return self.dag_id, self.task_id, self.run_id, self.execution_date
 
     def set_state(self, state, session):
         self.state = state
@@ -1053,6 +1066,7 @@ class TaskInstance(Base):
         ti = session.query(func.count(TaskInstance.task_id)).filter(
             TaskInstance.dag_id == self.dag_id,
             TaskInstance.task_id.in_(task.downstream_task_ids),
+            TaskInstance.run_id == self.run_id,
             TaskInstance.execution_date == self.execution_date,
             TaskInstance.state == State.SUCCESS,
         )
@@ -1075,6 +1089,7 @@ class TaskInstance(Base):
                 if not previous_scheduled_date:
                     return None
 
+                # no dagrun hence no run_id
                 return TaskInstance(task=self.task,
                                     execution_date=previous_scheduled_date)
 
@@ -1149,7 +1164,7 @@ class TaskInstance(Base):
 
     def __repr__(self):
         return (
-            "<TaskInstance: {ti.dag_id}.{ti.task_id} "
+            "<TaskInstance: {ti.dag_id}.{ti.task_id}.{ti.run_id} "
             "{ti.execution_date} [{ti.state}]>"
         ).format(ti=self)
 
@@ -1204,6 +1219,7 @@ class TaskInstance(Base):
         """
         dr = session.query(DagRun).filter(
             DagRun.dag_id == self.dag_id,
+            DagRun.run_id == self.run_id,
             DagRun.execution_date == self.execution_date
         ).first()
 
@@ -1437,7 +1453,7 @@ class TaskInstance(Base):
             session.add(Log(State.FAILED, self))
 
         # Log failure duration
-        session.add(TaskFail(task, self.execution_date, self.start_date, self.end_date))
+        session.add(TaskFail(task, self.run_id, self.execution_date, self.start_date, self.end_date))
 
         # Let's go deeper
         try:
@@ -1495,11 +1511,11 @@ class TaskInstance(Base):
         yesterday_ds_nodash = yesterday_ds.replace('-', '')
         tomorrow_ds_nodash = tomorrow_ds.replace('-', '')
 
-        ti_key_str = "{task.dag_id}__{task.task_id}__{ds_nodash}"
+        ti_key_str = "{task.dag_id}__{task.task_id}__{task.run_id}__{ds_nodash}"
         ti_key_str = ti_key_str.format(**locals())
 
         params = {}
-        run_id = ''
+        # run_id = ''
         dag_run = None
         if hasattr(task, 'dag'):
             if task.dag.params:
@@ -1508,10 +1524,11 @@ class TaskInstance(Base):
                 session.query(DagRun)
                 .filter_by(
                     dag_id=task.dag.dag_id,
+                    run_id=self.run_id,
                     execution_date=self.execution_date)
                 .first()
             )
-            run_id = dag_run.run_id if dag_run else None
+            # run_id = dag_run.run_id if dag_run else None
             session.expunge_all()
             session.commit()
 
@@ -1557,7 +1574,7 @@ class TaskInstance(Base):
             'END_DATE': ds,
             'end_date': ds,
             'dag_run': dag_run,
-            'run_id': run_id,
+            'run_id': self.run_id,
             'execution_date': self.execution_date,
             'prev_execution_date': prev_execution_date,
             'next_execution_date': next_execution_date,
@@ -1706,14 +1723,16 @@ class TaskFail(Base):
 
     task_id = Column(String(ID_LEN), primary_key=True)
     dag_id = Column(String(ID_LEN), primary_key=True)
+    run_id = Column(String(ID_LEN), primary_key=True)
     execution_date = Column(DateTime, primary_key=True)
     start_date = Column(DateTime)
     end_date = Column(DateTime)
     duration = Column(Float)
 
-    def __init__(self, task, execution_date, start_date, end_date):
+    def __init__(self, task, run_id, execution_date, start_date, end_date):
         self.dag_id = task.dag_id
         self.task_id = task.task_id
+        self.run_id = run_id
         self.execution_date = execution_date
         self.start_date = start_date
         self.end_date = end_date
@@ -1731,6 +1750,7 @@ class Log(Base):
     dttm = Column(DateTime)
     dag_id = Column(String(ID_LEN))
     task_id = Column(String(ID_LEN))
+    run_id = Column(String(ID_LEN))
     event = Column(String(30))
     execution_date = Column(DateTime)
     owner = Column(String(500))
@@ -1746,6 +1766,7 @@ class Log(Base):
         if task_instance:
             self.dag_id = task_instance.dag_id
             self.task_id = task_instance.task_id
+            self.run_id = task_instance.run_id
             self.execution_date = task_instance.execution_date
             task_owner = task_instance.task.owner
 
@@ -3337,6 +3358,7 @@ class DAG(BaseDag, LoggingMixin):
 
         # create the associated task instances
         # state is None at the moment of creation
+	logging.info("verifying integrity")
         run.verify_integrity(session=session)
 
         run.refresh_from_db()
@@ -3904,6 +3926,7 @@ class DagRun(Base):
         TI = TaskInstance
         tis = session.query(TI).filter(
             TI.dag_id == self.dag_id,
+            TI.run_id == self.run_id,
             TI.execution_date == self.execution_date,
         )
         if state:
@@ -3931,6 +3954,7 @@ class DagRun(Base):
         TI = TaskInstance
         ti = session.query(TI).filter(
             TI.dag_id == self.dag_id,
+            TI.run_id == self.run_id,
             TI.execution_date == self.execution_date,
             TI.task_id == task_id
         ).one()
@@ -4059,6 +4083,7 @@ class DagRun(Base):
         # check for removed tasks
         task_ids = []
         for ti in tis:
+	    logging.info('ti {}'.format(ti.task_id))
             task_ids.append(ti.task_id)
             try:
                 dag.get_task(ti.task_id)
@@ -4072,7 +4097,8 @@ class DagRun(Base):
                 continue
 
             if task.task_id not in task_ids:
-                ti = TaskInstance(task, self.execution_date)
+		logging.info("new task {}".format(task.task_id))
+                ti = TaskInstance(task, self.run_id, self.execution_date)
                 session.add(ti)
 
         session.commit()
