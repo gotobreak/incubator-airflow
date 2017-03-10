@@ -723,7 +723,7 @@ class TaskInstance(Base):
 
     task_id = Column(String(ID_LEN), primary_key=True)
     dag_id = Column(String(ID_LEN), primary_key=True)
-    run_id = Column(String(ID_LEN), primary_key=True) 
+    run_id = Column(String(ID_LEN), primary_key=True)
     execution_date = Column(DateTime, primary_key=True)
     start_date = Column(DateTime)
     end_date = Column(DateTime)
@@ -749,7 +749,7 @@ class TaskInstance(Base):
         Index('ti_pool', pool, state, priority_weight),
     )
 
-    def __init__(self, task, execution_date, state=None):
+    def __init__(self, task, run_id, execution_date, state=None):
         self.dag_id = task.dag_id
         self.task_id = task.task_id
         self.run_id = run_id
