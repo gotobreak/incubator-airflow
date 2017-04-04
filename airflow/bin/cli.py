@@ -530,7 +530,12 @@ def task_state(args):
     """
     dag = get_dag(args)
     task = dag.get_task(task_id=args.task_id)
-    ti = TaskInstance(task, args.run_id, args.exec_date)
+    if args.exec_date == None:
+        print('no exec date')
+        ti = TaskInstance(task=task, run_id=args.run_id)
+    elif args.run_id == None:
+        print('no run id')
+        ti = TaskInstance(task=task, execution_date=args.exec_date)
     print(ti.current_state())
 
 
