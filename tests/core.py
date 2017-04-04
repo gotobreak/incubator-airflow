@@ -14,7 +14,10 @@
 
 from __future__ import print_function
 
+import bleach
 import doctest
+import json
+import logging
 import os
 import re
 import unittest
@@ -26,6 +29,7 @@ from datetime import datetime, time, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 import signal
+from time import time as timetime
 from time import sleep
 import warnings
 
@@ -58,7 +62,9 @@ from airflow.utils.dates import infer_time_unit, round_time, scale_time_units
 from airflow.utils.logging import LoggingMixin
 from lxml import html
 from airflow.exceptions import AirflowException
-from airflow.configuration import AirflowConfigException
+from airflow.configuration import AirflowConfigException, run_command
+from jinja2.sandbox import SecurityError
+from jinja2 import UndefinedError
 
 import six
 
@@ -1042,6 +1048,20 @@ class CoreTest(unittest.TestCase):
         session.commit()
         session.close()
 
+    def test_run_command(self):
+        if six.PY3:
+            write = r'sys.stdout.buffer.write("\u1000foo".encode("utf8"))'
+        else:
+            write = r'sys.stdout.write(u"\u1000foo".encode("utf8"))'
+
+        cmd = 'import sys; {0}; sys.stdout.flush()'.format(write)
+
+        self.assertEqual(run_command("python -c '{0}'".format(cmd)),
+                         u'\u1000foo' if six.PY3 else 'foo')
+
+        self.assertEqual(run_command('echo "foo bar"'), u'foo bar\n')
+        self.assertRaises(AirflowConfigException, run_command, 'bash -c "exit 1"')
+
 
 class CliTests(unittest.TestCase):
     def setUp(self):
@@ -1068,6 +1088,9 @@ class CliTests(unittest.TestCase):
 
     def test_cli_initdb(self):
         cli.initdb(self.parser.parse_args(['initdb']))
+
+    def test_cli_resetdb(self):
+        cli.resetdb(self.parser.parse_args(['resetdb', '--yes']))
 
     def test_cli_connections_list(self):
         with mock.patch('sys.stdout',
@@ -1407,7 +1430,63 @@ class CliTests(unittest.TestCase):
         os.remove('variables1.json')
         os.remove('variables2.json')
 
-class CSRFTests(unittest.TestCase):
+    def test_cli_webserver_foreground(self):
+        import subprocess
+
+        # Confirm that webserver hasn't been launched.
+        # pgrep returns exit status 1 if no process matched.
+        self.assertEqual(1, subprocess.Popen(["pgrep", "-c", "airflow"]).wait())
+        self.assertEqual(1, subprocess.Popen(["pgrep", "-c", "gunicorn"]).wait())
+
+        # Run webserver in foreground and terminate it.
+        p = subprocess.Popen(["airflow", "webserver"])
+        p.terminate()
+        p.wait()
+
+        # Assert that no process remains.
+        self.assertEqual(1, subprocess.Popen(["pgrep", "-c", "airflow"]).wait())
+        self.assertEqual(1, subprocess.Popen(["pgrep", "-c", "gunicorn"]).wait())
+
+    @unittest.skipIf("TRAVIS" in os.environ and bool(os.environ["TRAVIS"]),
+                     "Skipping test due to lack of required file permission")
+    def test_cli_webserver_background(self):
+        import subprocess
+        import psutil
+
+        def wait_pidfile(pidfile):
+            while True:
+                try:
+                    with open(pidfile) as f:
+                        return int(f.read())
+                except IOError:
+                    sleep(1)
+
+        # Confirm that webserver hasn't been launched.
+        self.assertEqual(1, subprocess.Popen(["pgrep", "-c", "airflow"]).wait())
+        self.assertEqual(1, subprocess.Popen(["pgrep", "-c", "gunicorn"]).wait())
+
+        # Run webserver in background.
+        subprocess.Popen(["airflow", "webserver", "-D"])
+        pidfile = cli.setup_locations("webserver")[0]
+        wait_pidfile(pidfile)
+
+        # Assert that gunicorn and its monitor are launched.
+        self.assertEqual(0, subprocess.Popen(["pgrep", "-c", "airflow"]).wait())
+        self.assertEqual(0, subprocess.Popen(["pgrep", "-c", "gunicorn"]).wait())
+
+        # Terminate monitor process.
+        pidfile = cli.setup_locations("webserver-monitor")[0]
+        pid = wait_pidfile(pidfile)
+        p = psutil.Process(pid)
+        p.terminate()
+        p.wait()
+
+        # Assert that no process remains.
+        self.assertEqual(1, subprocess.Popen(["pgrep", "-c", "airflow"]).wait())
+        self.assertEqual(1, subprocess.Popen(["pgrep", "-c", "gunicorn"]).wait())
+
+
+class SecurityTests(unittest.TestCase):
     def setUp(self):
         configuration.load_test_config()
         configuration.conf.set("webserver", "authenticate", "False")
@@ -1441,6 +1520,51 @@ class CSRFTests(unittest.TestCase):
         csrf = self.get_csrf(response)
         response = self.app.post("/admin/queryview/", data=dict(csrf_token=csrf))
         self.assertEqual(200, response.status_code)
+
+    def test_xss(self):
+        try:
+            self.app.get("/admin/airflow/tree?dag_id=<script>alert(123456)</script>")
+        except:
+            # exception is expected here since dag doesnt exist
+            pass
+        response = self.app.get("/admin/log", follow_redirects=True)
+        self.assertIn(bleach.clean("<script>alert(123456)</script>"), response.data.decode('UTF-8'))
+
+    def test_chart_data_template(self):
+        """Protect chart_data from being able to do RCE."""
+        session = settings.Session()
+        Chart = models.Chart
+        chart1 = Chart(
+            label='insecure_chart',
+            conn_id='airflow_db',
+            chart_type='bar',
+            sql="SELECT {{ ''.__class__.__mro__[1].__subclasses__() }}"
+        )
+        chart2 = Chart(
+            label="{{ ''.__class__.__mro__[1].__subclasses__() }}",
+            conn_id='airflow_db',
+            chart_type='bar',
+            sql="SELECT 1"
+        )
+        chart3 = Chart(
+            label="{{ subprocess.check_output('ls') }}",
+            conn_id='airflow_db',
+            chart_type='bar',
+            sql="SELECT 1"
+        )
+        session.add(chart1)
+        session.add(chart2)
+        session.add(chart3)
+        session.commit()
+        chart1_id = session.query(Chart).filter(Chart.label=='insecure_chart').first().id
+        with self.assertRaises(SecurityError):
+            response = self.app.get("/admin/airflow/chart_data?chart_id={}".format(chart1_id))
+        chart2_id = session.query(Chart).filter(Chart.label=="{{ ''.__class__.__mro__[1].__subclasses__() }}").first().id
+        with self.assertRaises(SecurityError):
+            response = self.app.get("/admin/airflow/chart_data?chart_id={}".format(chart2_id))
+        chart3_id = session.query(Chart).filter(Chart.label=="{{ subprocess.check_output('ls') }}").first().id
+        with self.assertRaises(UndefinedError):
+            response = self.app.get("/admin/airflow/chart_data?chart_id={}".format(chart3_id))
 
     def tearDown(self):
         configuration.conf.set("webserver", "expose_config", "False")
@@ -2044,6 +2168,22 @@ class ConnectionTest(unittest.TestCase):
         self.assertIsInstance(engine, sqlalchemy.engine.Engine)
         self.assertEqual('postgres://username:password@ec2.compute.com:5432/the_database', str(engine.url))
 
+    def test_get_connections_env_var(self):
+        conns = SqliteHook.get_connections(conn_id='test_uri')
+        assert len(conns) == 1
+        assert conns[0].host == 'ec2.compute.com'
+        assert conns[0].schema == 'the_database'
+        assert conns[0].login == 'username'
+        assert conns[0].password == 'password'
+        assert conns[0].port == 5432
+
+    def test_get_connections_db(self):
+        conns = BaseHook.get_connections(conn_id='airflow_db')
+        assert len(conns) == 1
+        assert conns[0].host == 'localhost'
+        assert conns[0].schema == 'airflow'
+        assert conns[0].login == 'root'
+
 
 class WebHDFSHookTest(unittest.TestCase):
     def setUp(self):
@@ -2058,6 +2198,56 @@ class WebHDFSHookTest(unittest.TestCase):
         from airflow.hooks.webhdfs_hook import WebHDFSHook
         c = WebHDFSHook(proxy_user='someone')
         self.assertEqual('someone', c.proxy_user)
+
+
+try:
+    from airflow.hooks.hdfs_hook import HDFSHook
+    import snakebite
+except ImportError:
+    HDFSHook = None
+
+
+@unittest.skipIf(HDFSHook is None,
+                 "Skipping test because HDFSHook is not installed")
+class HDFSHookTest(unittest.TestCase):
+    def setUp(self):
+        configuration.load_test_config()
+        os.environ['AIRFLOW_CONN_HDFS_DEFAULT'] = ('hdfs://localhost:8020')
+
+    def test_get_client(self):
+        client = HDFSHook(proxy_user='foo').get_conn()
+        self.assertIsInstance(client, snakebite.client.Client)
+        self.assertEqual('localhost', client.host)
+        self.assertEqual(8020, client.port)
+        self.assertEqual('foo', client.service.channel.effective_user)
+
+    @mock.patch('airflow.hooks.hdfs_hook.AutoConfigClient')
+    @mock.patch('airflow.hooks.hdfs_hook.HDFSHook.get_connections')
+    def test_get_autoconfig_client(self, mock_get_connections,
+                                   MockAutoConfigClient):
+        c = models.Connection(conn_id='hdfs', conn_type='hdfs',
+                              host='localhost', port=8020, login='foo',
+                              extra=json.dumps({'autoconfig': True}))
+        mock_get_connections.return_value = [c]
+        HDFSHook(hdfs_conn_id='hdfs').get_conn()
+        MockAutoConfigClient.assert_called_once_with(effective_user='foo',
+                                                     use_sasl=False)
+
+    @mock.patch('airflow.hooks.hdfs_hook.AutoConfigClient')
+    def test_get_autoconfig_client_no_conn(self, MockAutoConfigClient):
+        HDFSHook(hdfs_conn_id='hdfs_missing', autoconfig=True).get_conn()
+        MockAutoConfigClient.assert_called_once_with(effective_user=None,
+                                                     use_sasl=False)
+
+    @mock.patch('airflow.hooks.hdfs_hook.HDFSHook.get_connections')
+    def test_get_ha_client(self, mock_get_connections):
+        c1 = models.Connection(conn_id='hdfs_default', conn_type='hdfs',
+                               host='localhost', port=8020)
+        c2 = models.Connection(conn_id='hdfs_default', conn_type='hdfs',
+                               host='localhost2', port=8020)
+        mock_get_connections.return_value = [c1, c2]
+        client = HDFSHook().get_conn()
+        self.assertIsInstance(client, snakebite.client.HAClient)
 
 
 try:
@@ -2249,6 +2439,55 @@ class EmailSmtpTest(unittest.TestCase):
         utils.email.send_MIME_email('from', 'to', MIMEMultipart(), dryrun=True)
         self.assertFalse(mock_smtp.called)
         self.assertFalse(mock_smtp_ssl.called)
+
+class LogTest(unittest.TestCase):
+    def setUp(self):
+        configuration.load_test_config()
+
+    def _log(self):
+        settings.configure_logging()
+
+        sio = six.StringIO()
+        handler = logging.StreamHandler(sio)
+        logger = logging.getLogger()
+        logger.addHandler(handler)
+
+        logging.debug("debug")
+        logging.info("info")
+        logging.warn("warn")
+
+        sio.flush()
+        return sio.getvalue()
+
+    def test_default_log_level(self):
+        s = self._log()
+        self.assertFalse("debug" in s)
+        self.assertTrue("info" in s)
+        self.assertTrue("warn" in s)
+
+    def test_change_log_level_to_debug(self):
+        configuration.set("core", "LOGGING_LEVEL", "DEBUG")
+        s = self._log()
+        self.assertTrue("debug" in s)
+        self.assertTrue("info" in s)
+        self.assertTrue("warn" in s)
+
+    def test_change_log_level_to_info(self):
+        configuration.set("core", "LOGGING_LEVEL", "INFO")
+        s = self._log()
+        self.assertFalse("debug" in s)
+        self.assertTrue("info" in s)
+        self.assertTrue("warn" in s)
+
+    def test_change_log_level_to_warn(self):
+        configuration.set("core", "LOGGING_LEVEL", "WARNING")
+        s = self._log()
+        self.assertFalse("debug" in s)
+        self.assertFalse("info" in s)
+        self.assertTrue("warn" in s)
+
+    def tearDown(self):
+        configuration.set("core", "LOGGING_LEVEL", "INFO")
 
 if __name__ == '__main__':
     unittest.main()

@@ -18,6 +18,7 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import datetime
+import logging
 import os
 import unittest
 import time
@@ -118,6 +119,81 @@ class DagTest(unittest.TestCase):
         self.assertEqual(dag.dag_id, 'creating_dag_in_cm')
         self.assertEqual(dag.tasks[0].task_id, 'op6')
 
+    def test_dag_topological_sort(self):
+        dag = DAG(
+            'dag',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        # A -> B
+        # A -> C -> D
+        # ordered: B, D, C, A or D, B, C, A or D, C, B, A
+        with dag:
+            op1 = DummyOperator(task_id='A')
+            op2 = DummyOperator(task_id='B')
+            op3 = DummyOperator(task_id='C')
+            op4 = DummyOperator(task_id='D')
+            op1.set_upstream([op2, op3])
+            op3.set_upstream(op4)
+
+        topological_list = dag.topological_sort()
+        logging.info(topological_list)
+
+        tasks = [op2, op3, op4]
+        self.assertTrue(topological_list[0] in tasks)
+        tasks.remove(topological_list[0])
+        self.assertTrue(topological_list[1] in tasks)
+        tasks.remove(topological_list[1])
+        self.assertTrue(topological_list[2] in tasks)
+        tasks.remove(topological_list[2])
+        self.assertTrue(topological_list[3] == op1)
+
+        dag = DAG(
+            'dag',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        # C -> (A u B) -> D
+        # C -> E
+        # ordered: E | D, A | B, C
+        with dag:
+            op1 = DummyOperator(task_id='A')
+            op2 = DummyOperator(task_id='B')
+            op3 = DummyOperator(task_id='C')
+            op4 = DummyOperator(task_id='D')
+            op5 = DummyOperator(task_id='E')
+            op1.set_downstream(op3)
+            op2.set_downstream(op3)
+            op1.set_upstream(op4)
+            op2.set_upstream(op4)
+            op5.set_downstream(op3)
+
+        topological_list = dag.topological_sort()
+        logging.info(topological_list)
+
+        set1 = [op4, op5]
+        self.assertTrue(topological_list[0] in set1)
+        set1.remove(topological_list[0])
+
+        set2 = [op1, op2]
+        set2.extend(set1)
+        self.assertTrue(topological_list[1] in set2)
+        set2.remove(topological_list[1])
+
+        self.assertTrue(topological_list[2] in set2)
+        set2.remove(topological_list[2])
+
+        self.assertTrue(topological_list[3] in set2)
+
+        self.assertTrue(topological_list[4] == op3)
+
+        dag = DAG(
+            'dag',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        self.assertEquals(tuple(), dag.topological_sort())
+
 
 class DagRunTest(unittest.TestCase):
 
@@ -151,6 +227,39 @@ class DagRunTest(unittest.TestCase):
             'scheduled__2015-01-02T03:04:05', run_id,
             'Generated run_id did not match expectations: {0}'.format(run_id))
 
+    def test_dagrun_find(self):
+        session = settings.Session()
+        now = datetime.datetime.now()
+
+        dag_id1 = "test_dagrun_find_externally_triggered"
+        dag_run = models.DagRun(
+            dag_id=dag_id1,
+            run_id='manual__' + now.isoformat(),
+            execution_date=now,
+            start_date=now,
+            state=State.RUNNING,
+            external_trigger=True,
+        )
+        session.add(dag_run)
+
+        dag_id2 = "test_dagrun_find_not_externally_triggered"
+        dag_run = models.DagRun(
+            dag_id=dag_id2,
+            run_id='manual__' + now.isoformat(),
+            execution_date=now,
+            start_date=now,
+            state=State.RUNNING,
+            external_trigger=False,
+        )
+        session.add(dag_run)
+
+        session.commit()
+
+        self.assertEqual(1, len(models.DagRun.find(dag_id=dag_id1, external_trigger=True)))
+        self.assertEqual(0, len(models.DagRun.find(dag_id=dag_id1, external_trigger=False)))
+        self.assertEqual(0, len(models.DagRun.find(dag_id=dag_id2, external_trigger=True)))
+        self.assertEqual(1, len(models.DagRun.find(dag_id=dag_id2, external_trigger=False)))
+
     def test_dagrun_running_when_upstream_skipped(self):
         """
         Tests that a DAG run is not failed when an upstream task is skipped
@@ -182,6 +291,83 @@ class DagRunTest(unittest.TestCase):
                                       task_states=initial_task_states)
         updated_dag_state = dag_run.update_state()
         self.assertEqual(State.SUCCESS, updated_dag_state)
+
+    def test_dagrun_success_conditions(self):
+        session = settings.Session()
+
+        dag = DAG(
+            'test_dagrun_success_conditions',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        # A -> B
+        # A -> C -> D
+        # ordered: B, D, C, A or D, B, C, A or D, C, B, A
+        with dag:
+            op1 = DummyOperator(task_id='A')
+            op2 = DummyOperator(task_id='B')
+            op3 = DummyOperator(task_id='C')
+            op4 = DummyOperator(task_id='D')
+            op1.set_upstream([op2, op3])
+            op3.set_upstream(op4)
+
+        dag.clear()
+
+        now = datetime.datetime.now()
+        dr = dag.create_dagrun(run_id='test_dagrun_success_conditions',
+                               state=State.RUNNING,
+                               execution_date=now,
+                               start_date=now)
+
+        # op1 = root
+        ti_op1 = dr.get_task_instance(task_id=op1.task_id)
+        ti_op1.set_state(state=State.SUCCESS, session=session)
+
+        ti_op2 = dr.get_task_instance(task_id=op2.task_id)
+        ti_op3 = dr.get_task_instance(task_id=op3.task_id)
+        ti_op4 = dr.get_task_instance(task_id=op4.task_id)
+
+        # root is successful, but unfinished tasks
+        state = dr.update_state()
+        self.assertEqual(State.RUNNING, state)
+
+        # one has failed, but root is successful
+        ti_op2.set_state(state=State.FAILED, session=session)
+        ti_op3.set_state(state=State.SUCCESS, session=session)
+        ti_op4.set_state(state=State.SUCCESS, session=session)
+        state = dr.update_state()
+        self.assertEqual(State.SUCCESS, state)
+
+        # upstream dependency failed, root has not run
+        ti_op1.set_state(State.NONE, session)
+        state = dr.update_state()
+        self.assertEqual(State.FAILED, state)
+
+    def test_get_task_instance_on_empty_dagrun(self):
+        """
+        Make sure that a proper value is returned when a dagrun has no task instances
+        """
+        session = settings.Session()
+
+        # Any dag will work for this
+        dag = self.dagbag.get_dag('test_dagrun_short_circuit_false')
+        now = datetime.datetime.now()
+
+        # Don't use create_dagrun since it will create the task instances too which we
+        # don't want
+        dag_run = models.DagRun(
+            dag_id=dag.dag_id,
+            run_id='manual__' + now.isoformat(),
+            execution_date=now,
+            start_date=now,
+            state=State.RUNNING,
+            external_trigger=False,
+        )
+        session.add(dag_run)
+        session.commit()
+
+        ti = dag_run.get_task_instance('test_short_circuit_false')
+        self.assertEqual(None, ti)
 
 
 class DagBagTest(unittest.TestCase):
