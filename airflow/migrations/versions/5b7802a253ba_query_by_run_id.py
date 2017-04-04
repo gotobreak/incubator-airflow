@@ -30,7 +30,7 @@ import sqlalchemy as sa
 
 
 def upgrade():
-    op.add_column('task_instance', sa.Column('run_id', sa.String(length=250), nullable=False, server_default=None))
+    op.add_column('task_instance', sa.Column('run_id', sa.String(length=250), nullable=False, server_default="lorem ipsum"))
     op.execute('UPDATE task_instance SET task_instance.run_id=(SELECT dag_run.run_id FROM dag_run WHERE dag_run.dag_id=task_instance.dag_id)')
     op.create_unique_constraint("ti_unique_di_ti_ri", "task_instance", ["dag_id", "task_id", "run_id"])
     op.create_index('ti_state_run_id', 'task_instance', ['dag_id', 'task_id', 'run_id', 'state'], unique=False)
