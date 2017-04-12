@@ -3450,7 +3450,7 @@ class DAG(BaseDag, LoggingMixin):
 
         # create the associated task instances
         # state is None at the moment of creation
-	    logging.info("verifying integrity")
+        logging.info("verifying integrity")
         run.verify_integrity(session=session)
 
         run.refresh_from_db()
@@ -4208,7 +4208,7 @@ class DagRun(Base):
         # check for removed tasks
         task_ids = []
         for ti in tis:
-	        logging.info('ti {}'.format(ti.task_id))
+            logging.info('ti {}'.format(ti.task_id))
             task_ids.append(ti.task_id)
             try:
                 dag.get_task(ti.task_id)
@@ -4222,7 +4222,7 @@ class DagRun(Base):
                 continue
 
             if task.task_id not in task_ids:
-		        logging.info("new task {}".format(task.task_id))
+                logging.info("new task {}".format(task.task_id))
                 ti = TaskInstance(task, self.run_id, self.execution_date)
                 session.add(ti)
 
