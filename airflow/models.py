@@ -744,7 +744,7 @@ class TaskInstance(Base):
     task_id = Column(String(ID_LEN), primary_key=True)
     dag_id = Column(String(ID_LEN), primary_key=True)
     execution_date = Column(DateTime, primary_key=True)
-    run_id = Column(String(ID_LEN))
+    run_id = Column(String(ID_LEN), primary_key=True)
     start_date = Column(DateTime)
     end_date = Column(DateTime)
     duration = Column(Float)
@@ -1541,7 +1541,7 @@ class TaskInstance(Base):
         yesterday_ds_nodash = yesterday_ds.replace('-', '')
         tomorrow_ds_nodash = tomorrow_ds.replace('-', '')
 
-        ti_key_str = "{task.dag_id}__{task.task_id}__{task.run_id}__{ds_nodash}"
+        ti_key_str = "{task.dag_id}__{task.task_id}__{self.run_id}__{ds_nodash}"
         ti_key_str = ti_key_str.format(**locals())
 
         params = {}
