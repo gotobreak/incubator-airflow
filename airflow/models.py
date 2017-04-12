@@ -743,8 +743,8 @@ class TaskInstance(Base):
 
     task_id = Column(String(ID_LEN), primary_key=True)
     dag_id = Column(String(ID_LEN), primary_key=True)
-    run_id = Column(String(ID_LEN), primary_key=True)
     execution_date = Column(DateTime, primary_key=True)
+    run_id = Column(String(ID_LEN))
     start_date = Column(DateTime)
     end_date = Column(DateTime)
     duration = Column(Float)
@@ -1753,8 +1753,8 @@ class TaskFail(Base):
 
     task_id = Column(String(ID_LEN), primary_key=True)
     dag_id = Column(String(ID_LEN), primary_key=True)
-    run_id = Column(String(ID_LEN), primary_key=True)
     execution_date = Column(DateTime, primary_key=True)
+    run_id = Column(String(ID_LEN))
     start_date = Column(DateTime)
     end_date = Column(DateTime)
     duration = Column(Float)
