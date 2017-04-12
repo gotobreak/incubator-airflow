@@ -744,7 +744,7 @@ class TaskInstance(Base):
     task_id = Column(String(ID_LEN), primary_key=True)
     dag_id = Column(String(ID_LEN), primary_key=True)
     execution_date = Column(DateTime, primary_key=True)
-    run_id = Column(String(ID_LEN), primary_key=True)
+    run_id = Column(String(ID_LEN))
     start_date = Column(DateTime)
     end_date = Column(DateTime)
     duration = Column(Float)
@@ -772,8 +772,8 @@ class TaskInstance(Base):
     def __init__(self, task, run_id=None, execution_date=None, state=None):
         self.dag_id = task.dag_id
         self.task_id = task.task_id
-        self.run_id = run_id
         self.execution_date = execution_date
+        self.run_id = run_id
         self.task = task
         self.queue = task.queue
         self.pool = task.pool
