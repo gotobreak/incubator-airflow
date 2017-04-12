@@ -1041,7 +1041,6 @@ class TaskInstance(Base):
         session.query(XCom).filter(
             XCom.dag_id == self.dag_id,
             XCom.task_id == self.task_id,
-            XCom.run_id == self.run_id,
             XCom.execution_date == self.execution_date
         ).delete()
         session.commit()
@@ -1664,7 +1663,8 @@ class TaskInstance(Base):
             self,
             key,
             value,
-            execution_date=None):
+            execution_date=None,
+            run_id=None):
         """
         Make an XCom available for tasks to pull.
 
@@ -1690,7 +1690,8 @@ class TaskInstance(Base):
             value=value,
             task_id=self.task_id,
             dag_id=self.dag_id,
-            execution_date=execution_date or self.execution_date)
+            execution_date=execution_date or self.execution_date,
+            run_id=run_id or self.run_id)
 
     def xcom_pull(
             self,
@@ -2546,14 +2547,16 @@ class BaseOperator(object):
             context,
             key,
             value,
-            execution_date=None):
+            execution_date=None,
+            run_id=None):
         """
         See TaskInstance.xcom_push()
         """
         context['ti'].xcom_push(
             key=key,
             value=value,
-            execution_date=execution_date)
+            execution_date=execution_date,
+            run_id=run_id)
 
     def xcom_pull(
             self,
@@ -3734,9 +3737,11 @@ class XCom(Base):
     # source information
     task_id = Column(String(ID_LEN), nullable=False)
     dag_id = Column(String(ID_LEN), nullable=False)
+    run_id = Column(String(ID_LEN))
 
     __table_args__ = (
         Index('idx_xcom_dag_task_date', dag_id, task_id, execution_date, unique=False),
+        Index('idx_xcom_dag_task_run', dag_id, task_id, run_id, unique=False)
     )
 
     def __repr__(self):
@@ -3754,6 +3759,7 @@ class XCom(Base):
             execution_date,
             task_id,
             dag_id,
+            run_id,
             session=None):
         """
         Store an XCom value.
@@ -3775,7 +3781,8 @@ class XCom(Base):
             value=value,
             execution_date=execution_date,
             task_id=task_id,
-            dag_id=dag_id))
+            dag_id=dag_id,
+            run_id=run_id))
 
         session.commit()
 

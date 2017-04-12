@@ -40,6 +40,8 @@ def upgrade():
 #    op.create_unique_constraint("tf_unique_di_ti_ri", "task_fail", ["dag_id", "task_id", "run_id"])
 
     op.add_column('log', sa.Column('run_id', sa.String(), nullable=True))
+    op.add_column('xcom', sa.Column('run_id', sa.String(), nullable=True))
+    op.create_index('idx_xcom_dag_task_run', 'xcom', ['dag_id', 'task_id', 'run_id'], unique=False)
 
 
 def downgrade():
@@ -51,3 +53,5 @@ def downgrade():
     op.drop_column('run_id', 'task_fail')
     # op.drop_constraint('tf_unique_di_ti_ri', 'tf_unique_di_ti_ri')
     op.drop_column('log', 'run_id')
+    op.drop_column('xcom', 'run_id')
+    op.drop_index('idx_xcom_dag_task_run', table_name='xcom')
