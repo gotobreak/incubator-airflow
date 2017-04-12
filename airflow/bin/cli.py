@@ -151,7 +151,7 @@ def backfill(args, dag=None):
                                                  args.start_date))
         for task in dag.tasks:
             print("Task {0}".format(task.task_id))
-            ti = TaskInstance(task, args.start_date)
+            ti = TaskInstance(task, execution_date=args.start_date)
             ti.dry_run()
     else:
         dag.run(
@@ -396,7 +396,7 @@ def run(args, dag=None):
         dag = dag_pickle.pickle
     task = dag.get_task(task_id=args.task_id)
 
-    ti = TaskInstance(task, args.execution_date)
+    ti = TaskInstance(task, execution_date=args.execution_date)
     ti.refresh_from_db()
 
     if args.local:
@@ -509,7 +509,7 @@ def task_failed_deps(args):
     """
     dag = get_dag(args)
     task = dag.get_task(task_id=args.task_id)
-    ti = TaskInstance(task, args.execution_date)
+    ti = TaskInstance(task, execution_date=args.execution_date)
 
     dep_context = DepContext(deps=SCHEDULER_DEPS)
     failed_deps = list(ti.get_failed_dep_statuses(dep_context=dep_context))
@@ -582,7 +582,7 @@ def test(args, dag=None):
     if args.task_params:
         passed_in_params = json.loads(args.task_params)
         task.params.update(passed_in_params)
-    ti = TaskInstance(task, args.execution_date)
+    ti = TaskInstance(task, execution_date=args.execution_date)
 
     if args.dry_run:
         ti.dry_run()
@@ -593,7 +593,7 @@ def test(args, dag=None):
 def render(args):
     dag = get_dag(args)
     task = dag.get_task(task_id=args.task_id)
-    ti = TaskInstance(task, args.execution_date)
+    ti = TaskInstance(task, execution_date=args.execution_date)
     ti.render_templates()
     for attr in task.__class__.template_fields:
         print(textwrap.dedent("""\
