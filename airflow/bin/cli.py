@@ -525,17 +525,12 @@ def task_state(args):
     """
     Returns the state of a TaskInstance at the command line.
 
-    >>> airflow task_state tutorial sleep 2015-01-01
+    >>> airflow task_state tutorial sleep -e 2015-01-01
     success
     """
     dag = get_dag(args)
     task = dag.get_task(task_id=args.task_id)
-    if args.exec_date == None:
-        print('no exec date')
-        ti = TaskInstance(task=task, run_id=args.run_id)
-    elif args.run_id == None:
-        print('no run id')
-        ti = TaskInstance(task=task, execution_date=args.exec_date)
+    ti = TaskInstance(task=task, run_id=args.run_id, execution_date=args.exec_date)
     print(ti.current_state())
 
 
@@ -543,7 +538,7 @@ def dag_state(args):
     """
     Returns the state of a DagRun at the command line.
 
-    >>> airflow dag_state tutorial 2015-01-01T00:00:00.000000
+    >>> airflow dag_state tutorial -e 2015-01-01T00:00:00.000000
     running
     """
     dag = get_dag(args)

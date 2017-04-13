@@ -980,12 +980,12 @@ class TaskInstance(Base):
         a new session is used.
         """
         TI = TaskInstance
-        ti = session.query(TI).filter(
-            TI.dag_id == self.dag_id,
-            TI.task_id == self.task_id,
-            TI.run_id == self.run_id,
-            TI.execution_date == self.execution_date,
-        ).all()
+        ti = session.query(TI).filter(TI.dag_id == self.dag_id,TI.task_id == self.task_id).all()
+        if self.execution_date:
+            ti = session.query(TI).filter(TI.execution_date == self.execution_date).all()
+        if self.run_id:
+            ti = session.query(TI).filter(TI.run_id == self.run_id).all()
+
         if ti:
             state = ti[0].state
         else:
