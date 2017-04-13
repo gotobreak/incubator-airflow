@@ -1016,7 +1016,6 @@ class TaskInstance(Base):
         qry = session.query(TI).filter(
             TI.dag_id == self.dag_id,
             TI.task_id == self.task_id,
-            TI.run_id == self.run_id,
             TI.execution_date == self.execution_date)
 
         if lock_for_update:
@@ -1024,6 +1023,7 @@ class TaskInstance(Base):
         else:
             ti = qry.first()
         if ti:
+            self.run_id = ti.run_id
             self.state = ti.state
             self.start_date = ti.start_date
             self.end_date = ti.end_date
